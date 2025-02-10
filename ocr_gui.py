@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFileDialog,
                                QLabel, QSpinBox, QComboBox, QProgressBar,
@@ -7,21 +8,18 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QPalette, QColor
 import torch
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoTokenizer
 from PIL import Image
 import fitz  # PyMuPDF
-import logging
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-# Lokální definice process_vision_info (přepisuje importovanou verzi)
 def process_vision_info(messages):
+    """Local version of process_vision_info."""
     image_inputs = []
     video_inputs = []
-
     for message in messages:
         if message["role"] != "user":
             continue
@@ -30,7 +28,6 @@ def process_vision_info(messages):
                 image_inputs.append(content["image"])
             elif content["type"] == "video":
                 video_inputs.append(content["video"])
-
     return image_inputs, video_inputs
 
 
@@ -187,28 +184,26 @@ class MainWindow(QMainWindow):
         self.input_files = []
         self.output_dir = ""
         self.model = None
+        self.tokenizer = None
         self.processor = None
         self.initUI()
 
     def load_model(self):
-        """Load the Qwen2-VL-OCR model and processor"""
+        """Load the model from HuggingFace repository."""
         try:
             self.status_label.setText("Loading model...")
             QApplication.processEvents()
 
-            device = self.device_combo.currentText()
-
-            # Load model
+            # Load model from HuggingFace
+            repo_id = "prithivMLmods/Qwen2-VL-OCR-2B-Instruct"
+            
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                "prithivMLmods/Qwen2-VL-OCR-2B-Instruct",
+                repo_id,
                 torch_dtype="auto",
-                device_map=device
+                device_map="auto"
             )
-
-            # Load processor
-            self.processor = AutoProcessor.from_pretrained(
-                "prithivMLmods/Qwen2-VL-OCR-2B-Instruct"
-            )
+            self.processor = AutoProcessor.from_pretrained(repo_id)
+            self.tokenizer = AutoTokenizer.from_pretrained(repo_id)
 
             self.status_label.setText("Model loaded successfully")
             logger.info("Model loaded successfully")
@@ -217,14 +212,26 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
             self.status_label.setText("Error loading model")
+            logger.error(f"Model loading error: {str(e)}")
             return False
+
+    def clean_ocr_output(self, text):
+        replacements = {
+            '—': '-', 'fl': 'fl',
+            'fi': 'fi', 'ff': 'ff',
+            'ffi': 'ffi', 'ffl': 'ffl'
+            }
+            
+        for k, v in replacements.items():
+            text = text.replace(k, v)
+        return ' '.join(text.split())
 
     def initUI(self):
         self.setWindowTitle("PDF to Markdown Converter")
         self.setGeometry(100, 100, 900, 700)
         self.setStyleSheet(self.style_sheet.MAIN_WINDOW)
 
-        # Create main widget and scroll area
+        # Main widget and scroll area
         main_widget = QWidget()
         scroll = QScrollArea()
         scroll.setWidget(main_widget)
@@ -235,7 +242,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(20)
         layout.setContentsMargins(30, 30, 30, 30)
 
-        # Header section
+        # Header
         header_frame = QFrame()
         header_frame.setStyleSheet(self.style_sheet.FRAME)
         header_layout = QVBoxLayout(header_frame)
@@ -243,93 +250,76 @@ class MainWindow(QMainWindow):
         title = QLabel("PDF to Markdown Converter")
         title.setStyleSheet(self.style_sheet.TITLE)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        description = QLabel("Convert PDF documents to Markdown format using advanced OCR")
+        description = QLabel("Convert PDF documents to Markdown using advanced OCR")
         description.setStyleSheet(self.style_sheet.LABEL)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
         header_layout.addWidget(title)
         header_layout.addWidget(description)
         layout.addWidget(header_frame)
 
-        # Input/Output section
+        # Input/Output Section
         io_frame = QFrame()
         io_frame.setStyleSheet(self.style_sheet.FRAME)
         io_layout = QGridLayout(io_frame)
         io_layout.setSpacing(15)
 
-        # Input Files
         self.btn_input = QPushButton("Select PDF Files")
         self.btn_input.setStyleSheet(self.style_sheet.BUTTON)
         self.btn_input.clicked.connect(self.select_pdf_files)
         io_layout.addWidget(self.btn_input, 0, 0)
-
         self.file_count_label = QLabel("No files selected")
         self.file_count_label.setStyleSheet(self.style_sheet.LABEL)
         io_layout.addWidget(self.file_count_label, 0, 1)
-
         self.file_list = QLabel()
         self.file_list.setWordWrap(True)
         self.file_list.setStyleSheet(self.style_sheet.LABEL)
         io_layout.addWidget(self.file_list, 1, 0, 1, 2)
 
-        # Output Directory
         self.btn_output = QPushButton("Select Output Directory")
         self.btn_output.setStyleSheet(self.style_sheet.BUTTON)
         self.btn_output.clicked.connect(self.select_output_dir)
         io_layout.addWidget(self.btn_output, 2, 0)
-
         self.output_label = QLabel("No directory selected")
         self.output_label.setStyleSheet(self.style_sheet.LABEL)
         io_layout.addWidget(self.output_label, 2, 1)
-
         layout.addWidget(io_frame)
 
-        # Settings section
+        # Settings Section
         settings_frame = QFrame()
         settings_frame.setStyleSheet(self.style_sheet.FRAME)
         settings_layout = QGridLayout(settings_frame)
         settings_layout.setSpacing(15)
-
-        # Settings labels
         device_label = QLabel("Processing Device:")
         device_label.setStyleSheet(self.style_sheet.LABEL)
         settings_layout.addWidget(device_label, 0, 0)
-
         self.device_combo = QComboBox()
         self.device_combo.addItems(["cuda" if torch.cuda.is_available() else "cpu", "cpu"])
         self.device_combo.setStyleSheet(self.style_sheet.INPUT)
         settings_layout.addWidget(self.device_combo, 0, 1)
-
         layout.addWidget(settings_frame)
 
-        # Progress section
+        # Progress Section
         progress_frame = QFrame()
         progress_frame.setStyleSheet(self.style_sheet.FRAME)
         progress_layout = QVBoxLayout(progress_frame)
-
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet(self.style_sheet.LABEL)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         progress_layout.addWidget(self.status_label)
-
         self.progress_bar = QProgressBar()
         self.progress_bar.setStyleSheet(self.style_sheet.PROGRESS)
         self.progress_bar.setFixedHeight(20)
         progress_layout.addWidget(self.progress_bar)
-
         layout.addWidget(progress_frame)
 
-        # Control buttons
+        # Control Buttons
         buttons_frame = QFrame()
         buttons_frame.setStyleSheet(self.style_sheet.FRAME)
         buttons_layout = QHBoxLayout(buttons_frame)
         buttons_layout.setSpacing(15)
-
         self.start_button = QPushButton("Start Conversion")
         self.start_button.setStyleSheet(self.style_sheet.BUTTON)
         self.start_button.clicked.connect(self.process_pdfs)
-
         self.reset_button = QPushButton("Reset")
         self.reset_button.setStyleSheet(f"""
             QPushButton {{
@@ -345,7 +335,6 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.reset_button.clicked.connect(self.reset_all)
-
         buttons_layout.addWidget(self.start_button)
         buttons_layout.addWidget(self.reset_button)
         layout.addWidget(buttons_frame)
@@ -378,7 +367,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please select PDF files first!")
             return
         if not self.output_dir:
-            QMessageBox.warning(self, "Warning", "Please select output directory first!")
+            QMessageBox.warning(self, "Warning", "Please select an output directory first!")
             return
 
         try:
@@ -403,63 +392,44 @@ class MainWindow(QMainWindow):
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                     logger.debug(f"Image dimensions: {img.size}")
-
                     logger.debug("Starting inference")
+
                     messages = [{
                         "role": "user",
                         "content": [
                             {"type": "image", "image": img},
-                            {"type": "text", "text": "Extract and format all text from this image as markdown."},
-                        ],
+                            {"type": "text", "text": "Extract and format all text from this image as markdown."}
+                        ]
                     }]
 
-                    text = self.processor.apply_chat_template(
-                        messages, tokenize=False, add_generation_prompt=True
-                    )
-                    logger.debug("Chat template applied")
-                    image_inputs = [img]
+                    # Process the input using the processor
+                    text_prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
                     inputs = self.processor(
-                        text=[text],
-                        images=image_inputs,
-                        # videos=video_inputs,
+                        text=[text_prompt],
+                        images=[img],
                         padding=True,
-                        return_tensors="pt",
-                    ).to(self.device_combo.currentText())
-                    logger.debug(f"Input shape: {inputs.input_ids.shape}")
-                    generated_ids = self.model.generate(**inputs, max_new_tokens=2048)
-                    logger.debug(f"Generated IDs shape: {generated_ids.shape}")
+                        return_tensors="pt"
+                    )
+                    inputs = inputs.to(self.device_combo.currentText())
+                    
+                    # Generate output
+                    output_ids = self.model.generate(**inputs, max_new_tokens=1024)
+                    generated_ids = [
+                        output_ids[len(input_ids):] 
+                        for input_ids, output_ids in zip(inputs.input_ids, output_ids)
+                    ]
+                    output_text = self.processor.batch_decode(
+                        generated_ids,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=True
+                    )[0]  # Take first result since we're processing one page at a time
 
-                    generated_ids_trimmed = generated_ids[:, inputs.input_ids.shape[1]:]
-                    logger.debug(f"Trimmed IDs length: {len(generated_ids_trimmed)}")
-                    logger.debug(f"Trimmed IDs shape: {generated_ids_trimmed[0].shape}")
+                    # Clean and normalize output text
+                    output_text = self.clean_ocr_output(output_text)
 
-                    try:
-                        if generated_ids_trimmed is not None and generated_ids_trimmed.numel() > 0:
-                            logger.debug("Decoding text")
-                            output_text_list = self.processor.batch_decode(
-                                generated_ids_trimmed,
-                                skip_special_tokens=True,
-                                clean_up_tokenization_spaces=False
-                            )
-                            logger.debug("Successfully decoded text")
-                            logger.debug(f"Output text length: {len(output_text_list) if output_text_list else 0}")
-                        else:
-                            logger.debug("No text to decode")
-                            output_text_list = self.processor.batch_decode(
-                                generated_ids_trimmed,
-                                skip_special_tokens=True,
-                                clean_up_tokenization_spaces=False
-                            )
-                            logger.debug("Successfully decoded text")
-                    except IndexError as e:
-                        logger.error(f"Index error during decoding: {str(e)}")
-                        logger.debug(f"Generated IDs trimmed: {generated_ids_trimmed}")
-                        raise
-
-                    output_text = output_text_list[0] if output_text_list else ""
-
+                    # Save output as markdown file
                     output_path = os.path.join(output_subdir, f"page_{page_num+1}.md")
-                    logger.debug(f"Processing page {page_num + 1}")
+                    logger.debug(f"Saving output for page {page_num+1}")
                     with open(output_path, 'w', encoding='utf-8') as f:
                         f.write(output_text)
 
@@ -484,30 +454,24 @@ class MainWindow(QMainWindow):
         self.output_label.setText("No directory selected")
         self.progress_bar.setValue(0)
         self.status_label.setText("Ready")
-
-        # Clear model from memory
         if self.model is not None:
             del self.model
             self.model = None
         if self.processor is not None:
             del self.processor
             self.processor = None
-
+        if self.tokenizer is not None:
+            del self.tokenizer
+            self.tokenizer = None
 
 def main():
     app = QApplication(sys.argv)
-
-    # Set application style
     app.setStyle('Fusion')
-
-    # Get theme colors based on system theme
     colors = ThemeColors.get_theme(app)
     style_sheet = StyleSheet(colors)
-
     window = MainWindow(style_sheet)
     window.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

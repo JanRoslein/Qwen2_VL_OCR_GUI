@@ -1,4 +1,4 @@
-## PDF to Markdown Converter
+## PDF to TXT Converter
 
 ### Overview
 This is a GUI-based application that converts PDF documents into Markdown text using advanced Optical Character Recognition (OCR) techniques. The application leverages PySide6 for the user interface and a transformer model from Hugging Face for text extraction from images.

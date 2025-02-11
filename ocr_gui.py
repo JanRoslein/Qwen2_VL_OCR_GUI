@@ -3,14 +3,16 @@ import sys
 import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QFileDialog,
-                               QLabel, QSpinBox, QComboBox, QProgressBar,
+                               QLabel, QComboBox, QProgressBar,
                                QScrollArea, QFrame, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QPalette, QColor
+from PySide6.QtGui import QPalette
 import torch
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoTokenizer
 from PIL import Image
 import fitz  # PyMuPDF
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -175,7 +177,7 @@ class StyleSheet:
             border-radius: 5px;
         }}
         """
-
+    
 
 class MainWindow(QMainWindow):
     def __init__(self, style_sheet):
@@ -189,45 +191,33 @@ class MainWindow(QMainWindow):
         self.initUI()
 
     def load_model(self):
-        """Load the model from HuggingFace repository."""
+        """Load the model from HuggingFace repository with optimized memory management."""
         try:
-            self.status_label.setText("Loading model...")
-            QApplication.processEvents()
+            logger.info("Loading model...")
 
-            # Load model from HuggingFace
             repo_id = "prithivMLmods/Qwen2-VL-OCR-2B-Instruct"
-            
+
             self.model = Qwen2VLForConditionalGeneration.from_pretrained(
                 repo_id,
                 torch_dtype="auto",
-                device_map="auto"
+                device_map="auto",
+                max_memory={0: "10GB"}
             )
+
             self.processor = AutoProcessor.from_pretrained(repo_id)
             self.tokenizer = AutoTokenizer.from_pretrained(repo_id)
 
-            self.status_label.setText("Model loaded successfully")
-            logger.info("Model loaded successfully")
+            torch.cuda.empty_cache()
+
+            print("Model loaded successfully")
             return True
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
-            self.status_label.setText("Error loading model")
-            logger.error(f"Model loading error: {str(e)}")
+            print(f"Error loading model: {str(e)}")
             return False
 
-    def clean_ocr_output(self, text):
-        replacements = {
-            '—': '-', 'fl': 'fl',
-            'fi': 'fi', 'ff': 'ff',
-            'ffi': 'ffi', 'ffl': 'ffl'
-            }
-            
-        for k, v in replacements.items():
-            text = text.replace(k, v)
-        return ' '.join(text.split())
-
     def initUI(self):
-        self.setWindowTitle("PDF to Markdown Converter")
+        self.setWindowTitle("OCR PDF to TXT converter")
         self.setGeometry(100, 100, 900, 700)
         self.setStyleSheet(self.style_sheet.MAIN_WINDOW)
 
@@ -389,7 +379,7 @@ class MainWindow(QMainWindow):
 
                 for page_num in range(len(doc)):
                     page = doc.load_page(page_num)
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=False)
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                     logger.debug(f"Image dimensions: {img.size}")
                     logger.debug("Starting inference")
@@ -398,37 +388,39 @@ class MainWindow(QMainWindow):
                         "role": "user",
                         "content": [
                             {"type": "image", "image": img},
-                            {"type": "text", "text": "Extract and format all text from this image as markdown."}
+                            {"type": "text", "text": "Please extract all text from this image."}
                         ]
                     }]
 
                     # Process the input using the processor
                     text_prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+    
                     inputs = self.processor(
                         text=[text_prompt],
                         images=[img],
                         padding=True,
                         return_tensors="pt"
                     )
+
                     inputs = inputs.to(self.device_combo.currentText())
                     
                     # Generate output
-                    output_ids = self.model.generate(**inputs, max_new_tokens=1024)
+                    with torch.no_grad():
+                        output_ids = self.model.generate(**inputs, max_new_tokens=2048)
+
                     generated_ids = [
                         output_ids[len(input_ids):] 
                         for input_ids, output_ids in zip(inputs.input_ids, output_ids)
                     ]
+
                     output_text = self.processor.batch_decode(
                         generated_ids,
                         skip_special_tokens=True,
                         clean_up_tokenization_spaces=True
-                    )[0]  # Take first result since we're processing one page at a time
-
-                    # Clean and normalize output text
-                    output_text = self.clean_ocr_output(output_text)
+                    )[0].replace("<|im_end|>", "")
 
                     # Save output as markdown file
-                    output_path = os.path.join(output_subdir, f"page_{page_num+1}.md")
+                    output_path = os.path.join(output_subdir, f"page_{page_num+1}.txt")
                     logger.debug(f"Saving output for page {page_num+1}")
                     with open(output_path, 'w', encoding='utf-8') as f:
                         f.write(output_text)
@@ -436,6 +428,9 @@ class MainWindow(QMainWindow):
                     current_progress += 1
                     self.progress_bar.setValue(current_progress)
                     QApplication.processEvents()
+
+                    del inputs, output_ids
+                    torch.cuda.empty_cache()
 
                 doc.close()
 

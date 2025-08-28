@@ -1,4 +1,4 @@
-import os
+import os 
 import sys
 import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -177,7 +177,7 @@ class StyleSheet:
             border-radius: 5px;
         }}
         """
-    
+
 
 class MainWindow(QMainWindow):
     def __init__(self, style_sheet):
@@ -185,6 +185,8 @@ class MainWindow(QMainWindow):
         self.style_sheet = style_sheet
         self.input_files = []
         self.output_dir = ""
+        self.image_dir = ""
+        self.image_files = []
         self.model = None
         self.tokenizer = None
         self.processor = None
@@ -217,7 +219,7 @@ class MainWindow(QMainWindow):
             return False
 
     def initUI(self):
-        self.setWindowTitle("OCR PDF to TXT converter")
+        self.setWindowTitle("OCR PDF/Image to TXT converter")
         self.setGeometry(100, 100, 900, 700)
         self.setStyleSheet(self.style_sheet.MAIN_WINDOW)
 
@@ -237,10 +239,10 @@ class MainWindow(QMainWindow):
         header_frame.setStyleSheet(self.style_sheet.FRAME)
         header_layout = QVBoxLayout(header_frame)
 
-        title = QLabel("PDF to Markdown Converter")
+        title = QLabel("PDF/Image to Markdown Converter")
         title.setStyleSheet(self.style_sheet.TITLE)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        description = QLabel("Convert PDF documents to Markdown using advanced OCR")
+        description = QLabel("Convert PDF documents and images to Markdown using advanced OCR")
         description.setStyleSheet(self.style_sheet.LABEL)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(title)
@@ -253,25 +255,38 @@ class MainWindow(QMainWindow):
         io_layout = QGridLayout(io_frame)
         io_layout.setSpacing(15)
 
+        # PDF files
         self.btn_input = QPushButton("Select PDF Files")
         self.btn_input.setStyleSheet(self.style_sheet.BUTTON)
         self.btn_input.clicked.connect(self.select_pdf_files)
         io_layout.addWidget(self.btn_input, 0, 0)
-        self.file_count_label = QLabel("No files selected")
+        self.file_count_label = QLabel("No PDF files selected")
         self.file_count_label.setStyleSheet(self.style_sheet.LABEL)
         io_layout.addWidget(self.file_count_label, 0, 1)
+
+        # Image directory
+        self.btn_imgdir = QPushButton("Select Image Directory")
+        self.btn_imgdir.setStyleSheet(self.style_sheet.BUTTON)
+        self.btn_imgdir.clicked.connect(self.select_image_dir)
+        io_layout.addWidget(self.btn_imgdir, 1, 0)
+        self.imgdir_label = QLabel("No directory selected")
+        self.imgdir_label.setStyleSheet(self.style_sheet.LABEL)
+        io_layout.addWidget(self.imgdir_label, 1, 1)
+
         self.file_list = QLabel()
         self.file_list.setWordWrap(True)
         self.file_list.setStyleSheet(self.style_sheet.LABEL)
-        io_layout.addWidget(self.file_list, 1, 0, 1, 2)
+        io_layout.addWidget(self.file_list, 2, 0, 1, 2)
 
+        # Output
         self.btn_output = QPushButton("Select Output Directory")
         self.btn_output.setStyleSheet(self.style_sheet.BUTTON)
         self.btn_output.clicked.connect(self.select_output_dir)
-        io_layout.addWidget(self.btn_output, 2, 0)
+        io_layout.addWidget(self.btn_output, 3, 0)
         self.output_label = QLabel("No directory selected")
         self.output_label.setStyleSheet(self.style_sheet.LABEL)
-        io_layout.addWidget(self.output_label, 2, 1)
+        io_layout.addWidget(self.output_label, 3, 1)
+
         layout.addWidget(io_frame)
 
         # Settings Section
@@ -309,7 +324,7 @@ class MainWindow(QMainWindow):
         buttons_layout.setSpacing(15)
         self.start_button = QPushButton("Start Conversion")
         self.start_button.setStyleSheet(self.style_sheet.BUTTON)
-        self.start_button.clicked.connect(self.process_pdfs)
+        self.start_button.clicked.connect(self.process_inputs)
         self.reset_button = QPushButton("Reset")
         self.reset_button.setStyleSheet(f"""
             QPushButton {{
@@ -341,6 +356,27 @@ class MainWindow(QMainWindow):
             self.file_count_label.setText(f"{len(files)} file(s) selected")
             self.file_list.setText("\n".join(files))
 
+    def select_image_dir(self):
+        dir_ = QFileDialog.getExistingDirectory(
+            self,
+            "Select Image Directory",
+            os.path.expanduser('~')
+        )
+        if dir_:
+            self.image_dir = dir_
+            self.imgdir_label.setText(dir_)
+            supported_ext = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp", ".tif")
+            self.image_files = [
+                os.path.join(root, f)
+                for root, _, files in os.walk(dir_)
+                for f in files
+                if f.lower().endswith(supported_ext)
+            ]
+            self.file_list.setText(
+                f"{len(self.image_files)} image(s) found in directory\n" +
+                "\n".join(self.image_files[:10]) + ("\n..." if len(self.image_files) > 10 else "")
+            )
+
     def select_output_dir(self):
         dir_ = QFileDialog.getExistingDirectory(
             self,
@@ -351,10 +387,11 @@ class MainWindow(QMainWindow):
             self.output_dir = dir_
             self.output_label.setText(dir_)
 
-    def process_pdfs(self):
-        logger.debug("Starting PDF processing")
-        if not self.input_files:
-            QMessageBox.warning(self, "Warning", "Please select PDF files first!")
+    def process_inputs(self):
+        logger.debug("Starting PDF/Image processing")
+
+        if not self.input_files and not self.image_files:
+            QMessageBox.warning(self, "Warning", "Please select PDF files or an image directory first!")
             return
         if not self.output_dir:
             QMessageBox.warning(self, "Warning", "Please select an output directory first!")
@@ -366,9 +403,11 @@ class MainWindow(QMainWindow):
                     return
 
             total_pages = sum(len(fitz.open(pdf)) for pdf in self.input_files)
+            total_pages += len(self.image_files)
             self.progress_bar.setRange(0, total_pages)
             current_progress = 0
 
+            # Process PDFs
             for pdf_path in self.input_files:
                 base_name = os.path.splitext(os.path.basename(pdf_path))[0]
                 output_subdir = os.path.join(self.output_dir, base_name)
@@ -381,70 +420,87 @@ class MainWindow(QMainWindow):
                     page = doc.load_page(page_num)
                     pix = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=False)
                     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                    logger.debug(f"Image dimensions: {img.size}")
-                    logger.debug("Starting inference")
 
-                    messages = [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": img},
-                            {"type": "text", "text": "Please extract all text from this image."}
-                        ]
-                    }]
-
-                    # Process the input using the processor
-                    text_prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-    
-                    inputs = self.processor(
-                        text=[text_prompt],
-                        images=[img],
-                        padding=True,
-                        return_tensors="pt"
-                    )
-
-                    inputs = inputs.to(self.device_combo.currentText())
-                    
-                    # Generate output
-                    with torch.no_grad():
-                        output_ids = self.model.generate(**inputs, max_new_tokens=2048)
-
-                    generated_ids = [
-                        output_ids[len(input_ids):] 
-                        for input_ids, output_ids in zip(inputs.input_ids, output_ids)
-                    ]
-
-                    output_text = self.processor.batch_decode(
-                        generated_ids,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=True
-                    )[0].replace("<|im_end|>", "")
-
-                    # Save output as markdown file
-                    output_path = os.path.join(output_subdir, f"page_{page_num+1}.txt")
-                    logger.debug(f"Saving output for page {page_num+1}")
-                    with open(output_path, 'w', encoding='utf-8') as f:
-                        f.write(output_text)
+                    self.run_inference(img, output_subdir, f"page_{page_num+1}.txt")
 
                     current_progress += 1
                     self.progress_bar.setValue(current_progress)
                     QApplication.processEvents()
 
-                    del inputs, output_ids
-                    torch.cuda.empty_cache()
-
                 doc.close()
 
+            # Process Images
+            if self.image_files:
+                img_outdir = os.path.join(self.output_dir, "images")
+                os.makedirs(img_outdir, exist_ok=True)
+                self.status_label.setText("Processing images...")
+
+                for idx, img_path in enumerate(self.image_files, 1):
+                    img = Image.open(img_path).convert("RGB")
+                    base_name = os.path.splitext(os.path.basename(img_path))[0]
+                    self.run_inference(img, img_outdir, f"{base_name}.txt")
+
+                    current_progress += 1
+                    self.progress_bar.setValue(current_progress)
+                    QApplication.processEvents()
+
             self.status_label.setText("Conversion completed successfully!")
-            QMessageBox.information(self, "Success", "PDF conversion completed successfully!")
+            QMessageBox.information(self, "Success", "Conversion completed successfully!")
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
             self.status_label.setText("Error occurred during conversion")
 
+    def run_inference(self, img, output_dir, filename):
+        logger.debug(f"Running inference on {filename}")
+
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": img},
+                {"type": "text", "text": "Please extract all text from this image."}
+            ]
+        }]
+
+        text_prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+
+        inputs = self.processor(
+            text=[text_prompt],
+            images=[img],
+            padding=True,
+            return_tensors="pt"
+        )
+
+        inputs = inputs.to(self.device_combo.currentText())
+
+        with torch.no_grad():
+            output_ids = self.model.generate(**inputs, max_new_tokens=2048)
+
+        generated_ids = [
+            output_ids[len(input_ids):]
+            for input_ids, output_ids in zip(inputs.input_ids, output_ids)
+        ]
+
+        output_text = self.processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=True
+        )[0].replace("<|im_end|>", "")
+
+        out_path = os.path.join(output_dir, filename)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(output_text)
+
+        del inputs, output_ids
+        torch.cuda.empty_cache()
+
     def reset_all(self):
         self.input_files = []
         self.output_dir = ""
-        self.file_count_label.setText("No files selected")
+        self.image_dir = ""
+        self.image_files = []
+        self.file_count_label.setText("No PDF files selected")
+        self.imgdir_label.setText("No directory selected")
         self.file_list.setText("")
         self.output_label.setText("No directory selected")
         self.progress_bar.setValue(0)
@@ -459,6 +515,7 @@ class MainWindow(QMainWindow):
             del self.tokenizer
             self.tokenizer = None
 
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
@@ -467,6 +524,7 @@ def main():
     window = MainWindow(style_sheet)
     window.show()
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

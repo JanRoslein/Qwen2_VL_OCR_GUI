@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 import torch
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoTokenizer
+from transformers import AutoProcessor, AutoModelForImageTextToText
 from PIL import Image
 import fitz  # PyMuPDF
 
@@ -17,6 +17,13 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works fine for PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
 
 def process_vision_info(messages):
     """Local version of process_vision_info."""
@@ -193,29 +200,34 @@ class MainWindow(QMainWindow):
         self.initUI()
 
     def load_model(self):
-        """Load the model from HuggingFace repository with optimized memory management."""
         try:
-            logger.info("Loading model...")
+            logger.debug("Loading model and processor...")
+            self.status_label.setText("Loading model... Please wait.")
 
-            repo_id = "prithivMLmods/Qwen2-VL-OCR-2B-Instruct"
+            local_model_path = resource_path(os.path.join("models", "Qwen2-VL-OCR-2B-Instruct"))
 
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
-                repo_id,
-                torch_dtype="auto",
-                device_map="auto",
-                max_memory={0: "10GB"}
-            )
+            self.processor = AutoProcessor.from_pretrained(local_model_path, trust_remote_code=True)
 
-            self.processor = AutoProcessor.from_pretrained(repo_id)
-            self.tokenizer = AutoTokenizer.from_pretrained(repo_id)
+            if torch.cuda.is_available():
+                device = "cuda"
+                dtype = torch.float16
+            else:
+                device = "cpu"
+                dtype = torch.float32
 
-            torch.cuda.empty_cache()
+            self.model = AutoModelForImageTextToText.from_pretrained(
+                local_model_path,
+                device_map=None,
+                torch_dtype=dtype,
+                trust_remote_code=True
+            ).to(device)
 
-            print("Model loaded successfully")
+            logger.debug("Model and processor loaded successfully from local directory.")
             return True
 
         except Exception as e:
-            print(f"Error loading model: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
+            logger.error(f"Model loading failed: {e}")
             return False
 
     def initUI(self):
@@ -239,10 +251,10 @@ class MainWindow(QMainWindow):
         header_frame.setStyleSheet(self.style_sheet.FRAME)
         header_layout = QVBoxLayout(header_frame)
 
-        title = QLabel("PDF/Image to Markdown Converter")
+        title = QLabel("PDF/Image to Text Converter")
         title.setStyleSheet(self.style_sheet.TITLE)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        description = QLabel("Convert PDF documents and images to Markdown using advanced OCR")
+        description = QLabel("Convert PDF documents and images to TXT using advanced OCR")
         description.setStyleSheet(self.style_sheet.LABEL)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(title)

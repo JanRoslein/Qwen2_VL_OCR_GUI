@@ -1,0 +1,1 @@
+pyinstaller --onefile --noconfirm --name Qwen2_VL_2B_OCR --add-data $env:CONDA_PREFIX\Lib\site-packages\torch\lib;torch\lib" --add-data "$env:CONDA_PREFIX\Library\bin;cudalibs" --add-data "models;models" --hidden-import torch --hidden-import transformers --hidden-import PySide6 --hidden-import fitz --icon .\ocr.ico ocr_gui.py

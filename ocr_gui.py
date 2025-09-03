@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 import torch
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from PIL import Image
 import fitz  # PyMuPDF
 
@@ -215,12 +215,11 @@ class MainWindow(QMainWindow):
                 device = "cpu"
                 dtype = torch.float32
 
-            self.model = AutoModelForImageTextToText.from_pretrained(
-                local_model_path,
-                device_map=None,
-                torch_dtype=dtype,
-                trust_remote_code=True
-            ).to(device)
+            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            local_model_path,
+            torch_dtype=dtype,
+            device_map="auto"
+            )
 
             logger.debug("Model and processor loaded successfully from local directory.")
             return True
